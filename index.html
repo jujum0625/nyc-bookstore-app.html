@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NYC Bookstore App</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a110a;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Sans', sans-serif;
+  overflow: hidden;
+}
+.scene {
+  display: flex;
+  gap: 40px;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px;
+  flex-wrap: wrap;
+}
+.app-scroll { width: 100%; height: 100%; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+.app-scroll::-webkit-scrollbar { display: none; }
+.overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 50; display: flex; flex-direction: column; justify-content: flex-end; }
+.bottom-sheet { border-radius: 20px 20px 0 0; max-height: 80%; overflow-y: auto; padding: 0 0 40px; animation: slideUp 0.3s cubic-bezier(0.32,0.72,0,1); }
+.bottom-sheet::-webkit-scrollbar { display: none; }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.sheet-handle { width: 36px; height: 4px; border-radius: 2px; margin: 12px auto 16px; opacity: 0.25; }
+.filter-row { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px; scrollbar-width: none; }
+.filter-row::-webkit-scrollbar { display: none; }
+.chip { flex-shrink: 0; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1.5px solid transparent; white-space: nowrap; }
+.event-card { margin: 0 16px 12px; border-radius: 14px; overflow: hidden; cursor: pointer; transition: transform 0.15s; }
+.event-card:active { transform: scale(0.98); }
+.event-type-pill { display: inline-flex; padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.tweaks-panel { position: fixed; bottom: 20px; right: 20px; border-radius: 16px; padding: 16px; width: 200px; z-index: 1000; box-shadow: 0 8px 32px rgba(0,0,0,0.4); font-family: 'DM Sans', sans-serif; }
+.tweaks-panel h4 { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; opacity: 0.6; }
+.tweak-btn { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; margin-bottom: 4px; transition: all 0.15s; }
+.tweak-divider { height: 1px; margin: 10px 0; opacity: 0.15; background: currentColor; }
+.tweak-label { font-size: 10px; opacity: 0.5; margin-bottom: 6px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+
+<script>
+// ── SUPABASE ────────────────────────────────────────────────────────────────
+const _supabase = window.supabase.createClient(
+  'https://txjngemvvpiqrrxhznzc.supabase.co',
+  'sb_publishable_nweGjy0ATaDdZDAWeD5hWg_IGJZH7VR'
+);
+
+function getUserId() {
+  let id = localStorage.getItem('nyc_bookstore_user_id');
+  if (!id) {
+    id = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+    localStorage.setItem('nyc_bookstore_user_id', id);
+  }
+  return id;
+}
+
+async function fetchSaved() {
+  const { data, error } = await _supabase
+    .from('bookmarked_events')
+    .select('event_id')
+    .eq('user_id', getUserId());
+  if (error) { console.error('fetchSaved:', error); return new Set(); }
+  return new Set(data.map(r => r.event_id));
+}
+
+async function saveEvent(eventId) {
+  const { error } = await _supabase
+    .from('bookmarked_events')
+    .upsert({ user_id: getUserId(), event_id: eventId }, { onConflict: 'user_id,event_id' });
+  if (error) console.error('saveEvent:', error);
+}
+
+async function unsaveEvent(eventId) {
+  const { error } = await _supabase
+    .from('bookmarked_events')
+    .delete()
+    .eq('user_id', getUserId())
+    .eq('event_id', eventId);
+  if (error) console.error('unsaveEvent:', error);
+}
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── iOS FRAME ────────────────────────────────────────────────────────────────
+
+function IOSStatusBar({ dark = false }) {
+  const c = dark ? '#fff' : '#000';
+  return (
+    <div style={{ display:'flex', gap:154, alignItems:'center', justifyContent:'center', padding:'21px 24px 19px', boxSizing:'border-box', position:'relative', zIndex:20, width:'100%' }}>
+      <div style={{ flex:1, height:22, display:'flex', alignItems:'center', justifyContent:'center', paddingTop:1.5 }}>
+        <span style={{ fontFamily:'-apple-system,"SF Pro",system-ui', fontWeight:590, fontSize:17, lineHeight:'22px', color:c }}>9:41</span>
+      </div>
+      <div style={{ flex:1, height:22, display:'flex', alignItems:'center', justifyContent:'center', gap:7, paddingTop:1, paddingRight:1 }}>
+        <svg width="19" height="12" viewBox="0 0 19 12">
+          <rect x="0" y="7.5" width="3.2" height="4.5" rx="0.7" fill={c}/>
+          <rect x="4.8" y="5" width="3.2" height="7" rx="0.7" fill={c}/>
+          <rect x="9.6" y="2.5" width="3.2" height="9.5" rx="0.7" fill={c}/>
+          <rect x="14.4" y="0" width="3.2" height="12" rx="0.7" fill={c}/>
+        </svg>
+        <svg width="17" height="12" viewBox="0 0 17 12">
+          <path d="M8.5 3.2C10.8 3.2 12.9 4.1 14.4 5.6L15.5 4.5C13.7 2.7 11.2 1.5 8.5 1.5C5.8 1.5 3.3 2.7 1.5 4.5L2.6 5.6C4.1 4.1 6.2 3.2 8.5 3.2Z" fill={c}/>
+          <path d="M8.5 6.8C9.9 6.8 11.1 7.3 12 8.2L13.1 7.1C11.8 5.9 10.2 5.1 8.5 5.1C6.8 5.1 5.2 5.9 3.9 7.1L5 8.2C5.9 7.3 7.1 6.8 8.5 6.8Z" fill={c}/>
+          <circle cx="8.5" cy="10.5" r="1.5" fill={c}/>
+        </svg>
+        <svg width="27" height="13" viewBox="0 0 27 13">
+          <rect x="0.5" y="0.5" width="23" height="12" rx="3.5" stroke={c} strokeOpacity="0.35" fill="none"/>
+          <rect x="2" y="2" width="20" height="9" rx="2" fill={c}/>
+          <path d="M25 4.5V8.5C25.8 8.2 26.5 7.2 26.5 6.5C26.5 5.8 25.8 4.8 25 4.5Z" fill={c} fillOpacity="0.4"/>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function IOSDevice({ children, dark = false }) {
+  return (
+    <div style={{ width:402, height:874, borderRadius:48, overflow:'hidden', position:'relative', background: dark ? '#000' : '#F2F2F7', boxShadow:'0 40px 80px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.12)', fontFamily:'-apple-system,system-ui,sans-serif', WebkitFontSmoothing:'antialiased' }}>
+      <div style={{ position:'absolute', top:11, left:'50%', transform:'translateX(-50%)', width:126, height:37, borderRadius:24, background:'#000', zIndex:50 }} />
+      <div style={{ position:'absolute', top:0, left:0, right:0, zIndex:10 }}><IOSStatusBar dark={dark} /></div>
+      <div style={{ height:'100%', display:'flex', flexDirection:'column' }}>
+        <div style={{ flex:1, overflow:'auto' }}>{children}</div>
+      </div>
+      <div style={{ position:'absolute', bottom:0, left:0, right:0, zIndex:60, height:34, display:'flex', justifyContent:'center', alignItems:'flex-end', paddingBottom:8, pointerEvents:'none' }}>
+        <div style={{ width:139, height:5, borderRadius:100, background: dark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.25)' }} />
+      </div>
+    </div>
+  );
+}
+
+// ── DATA ─────────────────────────────────────────────────────────────────────
+
+const BOOKSTORES = [
+  { id:1,  name:"Strand Bookstore",               neighborhood:"East Village",       borough:"Manhattan",   address:"828 Broadway",         tagline:"18 Miles of Books",                lat:40.7322,lng:-73.9903 },
+  { id:2,  name:"McNally Jackson",                neighborhood:"Nolita",             borough:"Manhattan",   address:"52 Prince St",         tagline:"Independent since 2004",           lat:40.7238,lng:-73.9965 },
+  { id:3,  name:"Housing Works Bookstore",        neighborhood:"SoHo",              borough:"Manhattan",   address:"126 Crosby St",        tagline:"Café · Books · Community",         lat:40.7244,lng:-73.9975 },
+  { id:4,  name:"Three Lives & Co.",              neighborhood:"West Village",       borough:"Manhattan",   address:"154 W 10th St",        tagline:"NYC's beloved corner shop",        lat:40.7335,lng:-74.0045 },
+  { id:5,  name:"Book Culture",                   neighborhood:"Upper West Side",    borough:"Manhattan",   address:"450 Columbus Ave",     tagline:"Serving readers since 1997",       lat:40.7832,lng:-73.9804 },
+  { id:6,  name:"Greenlight Bookstore",           neighborhood:"Fort Greene",        borough:"Brooklyn",    address:"686 Fulton St",        tagline:"Brooklyn's literary home",         lat:40.6884,lng:-73.9752 },
+  { id:7,  name:"Word Bookstore",                 neighborhood:"Greenpoint",         borough:"Brooklyn",    address:"126 Franklin St",      tagline:"Community & literature",           lat:40.7299,lng:-73.9584 },
+  { id:8,  name:"Community Bookstore",            neighborhood:"Park Slope",         borough:"Brooklyn",    address:"143 7th Ave",          tagline:"Est. 1971 · Park Slope",          lat:40.6669,lng:-73.9803 },
+  { id:9,  name:"Spoonbill & Sugartown",         neighborhood:"Williamsburg",       borough:"Brooklyn",    address:"218 Bedford Ave",      tagline:"Art · Design · Literature",        lat:40.7145,lng:-73.9586 },
+  { id:10, name:"The Lit Bar",                    neighborhood:"Mott Haven",         borough:"Bronx",       address:"131 Alexander Ave",    tagline:"The Bronx's bookstore",            lat:40.8110,lng:-73.9240 },
+  { id:11, name:"Barnes & Noble",                neighborhood:"Union Square",       borough:"Manhattan",   address:"33 E 17th St",         tagline:"Your neighborhood bookstore",      lat:40.7366,lng:-73.9906 },
+  { id:12, name:"Barnes & Noble",                neighborhood:"Upper West Side",    borough:"Manhattan",   address:"2289 Broadway",        tagline:"Books, music & more",              lat:40.7842,lng:-73.9801 },
+  { id:13, name:"NY Public Library — 42nd St",   neighborhood:"Midtown",            borough:"Manhattan",   address:"476 5th Ave",          tagline:"Knowledge for all, since 1895",    lat:40.7532,lng:-73.9822 },
+  { id:14, name:"NY Public Library — Schomburg", neighborhood:"Harlem",             borough:"Manhattan",   address:"515 Malcolm X Blvd",   tagline:"Center for Black culture",         lat:40.8141,lng:-73.9417 },
+  { id:15, name:"NY Public Library — Brooklyn",  neighborhood:"Brooklyn Heights",   borough:"Brooklyn",    address:"10 Grand Army Plaza",  tagline:"Brooklyn's grand library",         lat:40.6723,lng:-73.9686 },
+  { id:16, name:"Bibliothèque",                   neighborhood:"Williamsburg",       borough:"Brooklyn",    address:"9 Hope St",            tagline:"Books, cocktails & culture",       lat:40.7134,lng:-73.9628 },
+  { id:17, name:"The Back Room",                  neighborhood:"Lower East Side",    borough:"Manhattan",   address:"102 Norfolk St",       tagline:"Speakeasy · Literary nights",      lat:40.7185,lng:-73.9876 },
+  { id:18, name:"Vol de Nuit",                    neighborhood:"West Village",       borough:"Manhattan",   address:"148 W 4th St",         tagline:"Belgian bar · Book swaps",         lat:40.7308,lng:-74.0014 },
+  { id:19, name:"Molasses Books",                 neighborhood:"Bushwick",           borough:"Brooklyn",    address:"770 Hart St",          tagline:"Used books & craft beer",          lat:40.7019,lng:-73.9167 },
+  { id:20, name:"Book Club Bar",                  neighborhood:"Lower East Side",    borough:"Manhattan",   address:"197 E 3rd St",         tagline:"Drinks, books & good company",     lat:40.7225,lng:-73.9808 },
+  { id:21, name:"Little City Books",              neighborhood:"Hoboken",            borough:"Hoboken",     address:"100 Bloomfield St",    tagline:"Hoboken's indie bookstore",        lat:40.7459,lng:-74.0345 },
+  { id:22, name:"Symposia Books",                 neighborhood:"Hoboken",            borough:"Hoboken",     address:"510 Washington St",    tagline:"Community bookshop since 1989",    lat:40.7440,lng:-74.0300 },
+  { id:23, name:"1 Republik",                     neighborhood:"Hoboken",            borough:"Hoboken",     address:"50 Washington St",     tagline:"Bar · Books · Live events",        lat:40.7362,lng:-74.0290 },
+  { id:24, name:"WORD Jersey City",               neighborhood:"Jersey City",        borough:"Jersey City", address:"265 Grove St",         tagline:"Brooklyn's bookstore, now in JC",  lat:40.7200,lng:-74.0434 },
+  { id:25, name:"Pet Shop",                       neighborhood:"Jersey City",        borough:"Jersey City", address:"301 Grove St",         tagline:"Bar · Local arts · Literary nights",lat:40.7215,lng:-74.0441 },
+  { id:26, name:"White Eagle Hall",               neighborhood:"Jersey City",        borough:"Jersey City", address:"337 Newark Ave",       tagline:"Venue · Book events · Live music", lat:40.7270,lng:-74.0487 },
+  { id:27, name:"The Ashford",                    neighborhood:"Jersey City",        borough:"Jersey City", address:"121 Newark Ave",       tagline:"Cocktail bar · Literary events",   lat:40.7327,lng:-74.0627 },
+];
+
+const EVENTS = [
+  { id:1,  storeId:1,  type:"Author Reading",  date:"Apr 26", time:"7:00 PM",  price:"Free",  url:"https://www.strandbooks.com/events",                  title:"An Evening with Colson Whitehead",       desc:"Pulitzer Prize winner Colson Whitehead reads from his new novel and discusses the art of historical fiction. Followed by Q&A and book signing." },
+  { id:4,  storeId:2,  type:"Author Reading",  date:"Apr 29", time:"7:30 PM",  price:"Free",  url:"https://mcnallyjackson.com/events",                   title:"Jenny Zhang in Conversation",            desc:"Jenny Zhang discusses her latest poetry collection with Hanif Abdurraqib. Copies available for signing." },
+  { id:9,  storeId:7,  type:"Author Reading",  date:"May 4",  time:"7:00 PM",  price:"Free",  url:"https://www.wordbookstores.com/events",               title:"Ex-Pat Lit: Diaspora & Belonging",       desc:"Three debut authors explore themes of diaspora, belonging, and literary exile. Moderated panel followed by signing." },
+  { id:14, storeId:11, type:"Author Reading",  date:"Apr 30", time:"7:00 PM",  price:"Free",  url:"https://stores.barnesandnoble.com/events",            title:"B&N Reads: Debut Fiction Night",         desc:"Three debut novelists share excerpts and talk about the journey to publication. Moderated conversation with booksellers. Books available for signing." },
+  { id:19, storeId:13, type:"Author Reading",  date:"May 1",  time:"6:30 PM",  price:"Free",  url:"https://www.nypl.org/events",                         title:"Maps & Memory: Cartography Talk",        desc:"Historian and cartographer Sarah Benson discusses the history of NYC through rare maps from the NYPL's Lionel Pincus Collection. Light reception to follow." },
+  { id:44, storeId:21, type:"Author Reading",  date:"May 10", time:"6:30 PM",  price:"Free",  url:"https://www.littlecitybooks.com",                     title:"NJ Author Spotlight: Debut Fiction",     desc:"Little City Books spotlights two debut NJ-based novelists. Readings, conversation, and a signing to follow. Light refreshments served." },
+  { id:52, storeId:24, type:"Author Reading",  date:"May 6",  time:"7:00 PM",  price:"Free",  url:"https://www.wordbookstores.com",                      title:"Author Night: Jersey City Voices",       desc:"Three JC-based authors read from new and forthcoming work. Fiction, memoir, and poetry represented. Books available for purchase and signing." },
+  { id:27, storeId:1,  type:"Book Release",    date:"Apr 27", time:"7:00 PM",  price:"Free",  url:"https://www.strandbooks.com/events",                  title:"Launch: Percival Everett's New Novel",   desc:"Strand celebrates the release of Percival Everett's long-awaited new novel. First come, first signed. Limited copies available at the door — doors open at 6:30." },
+  { id:28, storeId:2,  type:"Book Release",    date:"May 2",  time:"7:30 PM",  price:"Free",  url:"https://mcnallyjackson.com/events",                   title:"Carmen Maria Machado: Book Release",     desc:"McNally Jackson hosts the NYC launch of Carmen Maria Machado's new short story collection. Readings, conversation, and a signing line to follow." },
+  { id:29, storeId:6,  type:"Book Release",    date:"May 9",  time:"7:00 PM",  price:"Free",  url:"https://greenlightbookstore.com/events",              title:"Debut Night: Four Brooklyn Voices",      desc:"Four debut authors based in Brooklyn celebrate their first books in one night. Expect readings, laughs, and a full signing table. Champagne toast included." },
+  { id:30, storeId:10, type:"Book Release",    date:"May 10", time:"6:00 PM",  price:"Free",  url:"https://thelitbar.com/events",                        title:"The Bronx Rising: Anthology Launch",     desc:"The Lit Bar launches 'The Bronx Rising,' an anthology of Bronx writers across poetry, fiction, and memoir. Contributors will read and sign." },
+  { id:31, storeId:4,  type:"Book Release",    date:"May 14", time:"7:00 PM",  price:"Free",  url:"https://www.threelives.com/events",                   title:"Ocean Vuong: New Poems — NYC Launch",   desc:"Three Lives & Co. hosts the intimate NYC launch of Ocean Vuong's new poetry collection. Small space — first 60 through the door. No RSVP required." },
+  { id:48, storeId:22, type:"Book Release",    date:"May 17", time:"6:00 PM",  price:"Free",  url:"https://symposiabooks.com",                           title:"Book Release: Hudson County Voices",     desc:"Symposia celebrates an anthology of writers from Hudson County. Contributors span poetry, personal essay, and short fiction. Reception follows the reading." },
+  { id:53, storeId:24, type:"Book Release",    date:"May 13", time:"7:30 PM",  price:"Free",  url:"https://www.wordbookstores.com",                      title:"Book Release: WORD JC Launch Night",    desc:"WORD JC hosts the New Jersey launch of a hotly anticipated debut novel. Reading, Q&A, and signing. First 50 guests receive a limited edition bookplate." },
+  { id:17, storeId:13, type:"Reading Party",   date:"Apr 25", time:"7:00 PM",  price:"Free",  url:"https://www.nypl.org/events",                         title:"Reading Party: Jazz & Literature",       desc:"Come read anything you like — novel, magazine, poetry — while live jazz plays softly in the Rose Main Reading Room. No phones, no pressure. Just readers together." },
+  { id:20, storeId:14, type:"Reading Party",   date:"May 3",  time:"6:00 PM",  price:"Free",  url:"https://www.nypl.org/locations/schomburg",            title:"Reading Party: Harlem Renaissance",      desc:"A reading party at the Schomburg Center. Bring a book or poem connected to the Harlem Renaissance. Live soul music curated by local DJs. Free, all are welcome." },
+  { id:23, storeId:15, type:"Reading Party",   date:"May 6",  time:"7:00 PM",  price:"Free",  url:"https://www.bklynlibrary.org/events",                 title:"Reading Party at Grand Army",            desc:"Reading party in the grand rotunda at Brooklyn Public Library. Live ambient music, low lighting, and the simple pleasure of reading together in a magnificent space." },
+  { id:25, storeId:3,  type:"Reading Party",   date:"Apr 30", time:"7:00 PM",  price:"Free",  url:"https://www.housingworksbookstore.org/events",        title:"Reading Party: SoHo Edition",            desc:"Reading party pops up at Housing Works. Bring whatever you're reading, order a coffee, and settle in. A rotating cast of local musicians play soft sets throughout." },
+  { id:32, storeId:16, type:"Reading Party",   date:"May 1",  time:"8:00 PM",  price:"Free",  url:"https://www.bibliothequebar.com/events",              title:"Bibliothèque Reading Party",             desc:"Bibliothèque hosts its monthly reading party — come with a book, leave with a cocktail recommendation. DJ spins ambient sets while you read. Book swap table in the back." },
+  { id:33, storeId:19, type:"Reading Party",   date:"May 7",  time:"7:00 PM",  price:"Free",  url:"https://molassesbooks.com",                           title:"Molasses Books Reading Night",           desc:"Bring a book, buy a beer. Molasses Books opens the back room for a low-key reading night. Used books available all evening; bring one, take one." },
+  { id:41, storeId:20, type:"Reading Party",   date:"May 8",  time:"7:00 PM",  price:"Free",  url:"https://www.bookclubbar.com",                         title:"Reading Party: LES Edition",             desc:"Book Club Bar dims the lights and turns up the ambient playlist for a monthly reading party. Bring whatever you're reading. The bar stays open; the vibe stays quiet." },
+  { id:46, storeId:22, type:"Reading Party",   date:"May 3",  time:"6:00 PM",  price:"Free",  url:"https://symposiabooks.com",                           title:"Symposia Reading Party",                 desc:"Symposia opens the store after hours for a reading party. Bring whatever you're in the middle of. The shop provides soft music and good lighting." },
+  { id:50, storeId:23, type:"Reading Party",   date:"May 14", time:"7:30 PM",  price:"Free",  url:"https://www.1republikbar.com",                        title:"Reading Party: Hoboken Edition",         desc:"1 Republik dims the lights for a reading party. BYOB (Bring Your Own Book). Bar is open. No agenda, just readers." },
+  { id:57, storeId:25, type:"Reading Party",   date:"May 15", time:"7:00 PM",  price:"Free",  url:"https://www.petshopjc.com",                           title:"Reading Party at Pet Shop",              desc:"Pet Shop transforms into a reading room for the night. Ambient playlist, low lights, and the full bar menu. Bring a book; stay as long as you like." },
+  { id:61, storeId:27, type:"Reading Party",   date:"May 10", time:"7:00 PM",  price:"Free",  url:"https://theashfordnj.com",                            title:"Journal Square Reading Party",           desc:"The Ashford hosts Journal Square's first reading party. Bring a book. The bar provides the vibe — low lighting, great cocktails. No phones policy enforced." },
+  { id:34, storeId:16, type:"Bar Event",       date:"Apr 26", time:"8:00 PM",  price:"$15",   url:"https://www.bibliothequebar.com/events",              title:"Bibliothèque: Chapter One Cocktail Night",desc:"A themed cocktail night where each drink is inspired by a literary classic. Bartenders quiz you on the book; get it right, get a discount." },
+  { id:35, storeId:16, type:"Bar Event",       date:"May 3",  time:"6:00 PM",  price:"Free",  url:"https://www.bibliothequebar.com/events",              title:"First Editions: Rare Book & Cocktail Fair",desc:"Local antiquarian booksellers set up at Bibliothèque for one night. Browse first editions, signed copies, and oddities alongside a full bar." },
+  { id:36, storeId:17, type:"Bar Event",       date:"Apr 28", time:"9:00 PM",  price:"$10",   url:"https://www.thebackroomnyc.com",                      title:"The Back Room: Banned Books Night",      desc:"Underground reading night at NYC's original speakeasy. Each ticket includes a banned book and a cocktail. Readers share passages; the crowd votes on the best one." },
+  { id:37, storeId:18, type:"Bar Event",       date:"May 5",  time:"7:00 PM",  price:"Free",  url:"https://www.voldenuitbar.com",                        title:"Vol de Nuit: Belgian Beer & Book Swap",  desc:"Monthly book swap at this beloved West Village Belgian bar. Bring a paperback you've finished, leave with a new one. The bar provides the Belgian ales." },
+  { id:38, storeId:19, type:"Bar Event",       date:"May 8",  time:"6:00 PM",  price:"Free",  url:"https://molassesbooks.com",                           title:"Molasses Books: Used & Boozy Pop-Up",   desc:"Bushwick's beloved used bookstore and bar hybrid hosts a pop-up with local small press vendors. Craft beer, cheap books, and the best smell in Brooklyn." },
+  { id:40, storeId:20, type:"Bar Event",       date:"May 1",  time:"8:00 PM",  price:"$5",    url:"https://www.bookclubbar.com",                         title:"Literary Trivia Night",                  desc:"Test your literary knowledge across six rounds covering fiction, poetry, banned books, and author bios. Teams of up to 6. Winning team gets a bar tab." },
+  { id:42, storeId:20, type:"Bar Event",       date:"May 15", time:"7:30 PM",  price:"$12",   url:"https://www.bookclubbar.com",                         title:"First Chapter Speed Dating",             desc:"A speed-dating format where you pitch your favorite book to strangers. Each round: 3 minutes, one book, one drink. Leave with new recommendations and maybe a new friend." },
+  { id:49, storeId:23, type:"Bar Event",       date:"Apr 30", time:"8:00 PM",  price:"Free",  url:"https://www.1republikbar.com",                        title:"1 Republik Literary Night",              desc:"Hoboken's 1 Republik hosts a monthly literary night — readings from regulars, a short fiction contest judged by the crowd, and a full bar all evening." },
+  { id:55, storeId:25, type:"Bar Event",       date:"May 1",  time:"8:30 PM",  price:"$5",    url:"https://www.petshopjc.com",                           title:"Pet Shop: Literary Trivia Night",        desc:"Literary trivia night — six rounds covering novels, authors, banned books, and first lines. Teams of up to 5. Winners get a bar tab." },
+  { id:58, storeId:26, type:"Bar Event",       date:"May 4",  time:"7:00 PM",  price:"$10",   url:"https://whiteeaglehall.com",                          title:"White Eagle Hall: Book & Music Night",   desc:"White Eagle Hall pairs live indie-folk music with short author readings. Three authors, three musical acts, one historic Jersey City venue. Tickets include one drink." },
+  { id:60, storeId:27, type:"Bar Event",       date:"Apr 27", time:"8:00 PM",  price:"Free",  url:"https://theashfordnj.com",                            title:"The Ashford: First Chapter Night",       desc:"The Ashford's monthly literary bar night. Read the first chapter of anything aloud to strangers. The crowd picks a winner. Cocktails encouraged throughout." },
+  { id:3,  storeId:4,  type:"Book Club",       date:"Apr 28", time:"7:00 PM",  price:"Free",  url:"https://www.threelives.com/events",                   title:"Baldwin Book Club: Giovanni's Room",     desc:"Monthly deep dive into James Baldwin's queer masterpiece set in 1950s Paris. Light wine and snacks provided." },
+  { id:10, storeId:8,  type:"Book Club",       date:"May 5",  time:"7:30 PM",  price:"$8",    url:"https://communitybookstore.net/events",               title:"Wine & Crime: True Crime Book Club",     desc:"Sip, read, and discuss this month's true crime pick in the cozy back room. Ticket includes one glass of wine." },
+  { id:15, storeId:12, type:"Book Club",       date:"May 2",  time:"4:00 PM",  price:"Free",  url:"https://stores.barnesandnoble.com/events",            title:"Teen Book Club: Sci-Fi Edition",         desc:"Monthly book club for teens ages 13–18. This month: a celebrated sci-fi debut. Snacks provided. Join us!" },
+  { id:39, storeId:20, type:"Book Club",       date:"Apr 28", time:"7:30 PM",  price:"Free",  url:"https://www.bookclubbar.com",                         title:"Book Club Bar: Monthly Book Club",       desc:"The bar's flagship monthly book club — this month's pick is announced at the door. Order a drink, grab a seat, and dive in." },
+  { id:43, storeId:21, type:"Book Club",       date:"May 5",  time:"7:00 PM",  price:"Free",  url:"https://www.littlecitybooks.com",                     title:"Little City Reads: May Pick",            desc:"Little City Books' monthly community book club. This month's pick announced in-store and via newsletter. Wine and snacks provided by the shop." },
+  { id:51, storeId:24, type:"Book Club",       date:"Apr 29", time:"7:00 PM",  price:"Free",  url:"https://www.wordbookstores.com",                      title:"WORD JC: Monthly Book Club",             desc:"WORD's Jersey City book club, meeting monthly. This month: a staff-picked debut novel. Light wine provided. Lively, welcoming crowd." },
+  { id:2,  storeId:3,  type:"Open Mic",        date:"Apr 25", time:"6:30 PM",  price:"Free",  url:"https://www.housingworksbookstore.org/events",        title:"Poetry Open Mic Night",                  desc:"An evening of original poetry from NYC's vibrant literary community. Sign up at the door. All voices, all forms welcome." },
+  { id:56, storeId:25, type:"Open Mic",        date:"May 8",  time:"7:30 PM",  price:"Free",  url:"https://www.petshopjc.com",                           title:"Open Mic: Stories & Songs",              desc:"An open mic blending short fiction, poetry, and original music. Sign up at the bar from 7pm. Five minutes per reader. All genres welcome." },
+  { id:8,  storeId:10, type:"Workshop",        date:"May 2",  time:"6:00 PM",  price:"$5",    url:"https://thelitbar.com/events",                        title:"The Bronx Writes: Open Workshop",        desc:"A workshop for Bronx-based writers to share works in progress and receive generative peer feedback. All genres." },
+  { id:12, storeId:2,  type:"Workshop",        date:"May 7",  time:"9:00 AM",  price:"$12",   url:"https://mcnallyjackson.com/events",                   title:"Morning Pages Writing Retreat",          desc:"A guided two-hour writing session to start your week. Prompts, coffee, and community. Beginners very welcome." },
+  { id:47, storeId:22, type:"Workshop",        date:"May 9",  time:"6:30 PM",  price:"$10",   url:"https://symposiabooks.com",                           title:"Hudson Writes: Fiction Workshop",        desc:"A fiction workshop series at Symposia. Drop into the first session free. Focus this month: building scenes that move. All levels welcome." },
+  { id:7,  storeId:5,  type:"Kids",            date:"Apr 26", time:"10:30 AM", price:"Free",  url:"https://bookculture.com/events",                      title:"Saturday Story Hour",                    desc:"Weekly story time for children ages 3–7 with readings, songs, and crafts. Drop-in welcome." },
+  { id:13, storeId:11, type:"Kids",            date:"Apr 26", time:"11:00 AM", price:"Free",  url:"https://stores.barnesandnoble.com/events",            title:"Kids Reading Hour with Ms. Rosa",        desc:"Join beloved storytime host Ms. Rosa for an hour of picture books, silly songs, and movement activities for children ages 2–6. Drop-in, all welcome." },
+  { id:16, storeId:12, type:"Kids",            date:"Apr 27", time:"10:00 AM", price:"Free",  url:"https://stores.barnesandnoble.com/events",            title:"Toddler Story Time",                     desc:"Cozy story time for toddlers and caregivers featuring board books, nursery rhymes, and a simple craft. Ages 1–3." },
+  { id:18, storeId:13, type:"Kids",            date:"Apr 26", time:"10:00 AM", price:"Free",  url:"https://www.nypl.org/events",                         title:"NYPL Kids: Magical Creatures Hour",      desc:"An enchanting story hour celebrating magical creatures from folklore around the world. For children ages 4–8, with crafts to take home. Drop-in, free." },
+  { id:21, storeId:14, type:"Kids",            date:"Apr 27", time:"11:00 AM", price:"Free",  url:"https://www.nypl.org/locations/schomburg",            title:"Young Scholars Story Hour",              desc:"Story time at the Schomburg celebrating Black history and culture through picture books. For children ages 3–8. Free with open doors — just show up." },
+  { id:24, storeId:15, type:"Kids",            date:"Apr 25", time:"9:30 AM",  price:"Free",  url:"https://www.bklynlibrary.org/events",                 title:"Baby Bookworms Story Time",              desc:"A gentle morning story time for babies and toddlers ages 0–2, with their caregivers. Songs, board books, and a moment of calm together. Drop-in." },
+  { id:45, storeId:21, type:"Kids",            date:"Apr 26", time:"10:00 AM", price:"Free",  url:"https://www.littlecitybooks.com",                     title:"Kids Story Time: Saturday Morning",      desc:"Weekly drop-in story time for children ages 2–7. Staff picks illustrated picture books and leads a simple craft. Caregivers welcome to browse." },
+  { id:54, storeId:24, type:"Kids",            date:"May 3",  time:"10:30 AM", price:"Free",  url:"https://www.wordbookstores.com",                      title:"Kids Saturday Story Time",               desc:"WORD JC's beloved Saturday morning story time for children ages 3–6. Drop-in, all welcome. Craft activity follows the reading." },
+  { id:5,  storeId:6,  type:"Community",       date:"May 1",  time:"12:00 PM", price:"Free",  url:"https://greenlightbookstore.com/events",              title:"Brooklyn Book Crawl Kickoff",            desc:"Start your self-guided literary crawl through Fort Greene and Clinton Hill here at Greenlight. Maps provided." },
+  { id:11, storeId:1,  type:"Community",       date:"May 6",  time:"11:00 AM", price:"Free",  url:"https://www.strandbooks.com/events",                  title:"Rare Books Appraisal Day",               desc:"Bring your old books! Strand's expert buyers will evaluate first editions, signed copies, and rare finds." },
+  { id:22, storeId:15, type:"Community",       date:"May 4",  time:"3:00 PM",  price:"Free",  url:"https://www.bklynlibrary.org/events",                 title:"Brooklyn Reads Together",                desc:"Brooklyn Public Library's community read-a-thon. Bring a blanket, bring a book. Readers of all ages gather on the Grand Army Plaza steps." },
+  { id:26, storeId:6,  type:"Community",       date:"May 8",  time:"5:00 PM",  price:"Free",  url:"https://greenlightbookstore.com/events",              title:"Neighborhood Read: Brooklyn Edition",    desc:"Fort Greene neighbors gather in the park next door for an informal read-in. Greenlight provides suggested titles; you bring whatever you love." },
+  { id:6,  storeId:9,  type:"Fair",            date:"May 3",  time:"11:00 AM", price:"Free",  url:"https://www.spoonbillbooks.com/events",               title:"Small Press & Zine Fair",                desc:"Browse and buy from 40+ independent publishers and zine makers from across the Northeast. Tables available." },
+  { id:59, storeId:26, type:"Fair",            date:"May 11", time:"12:00 PM", price:"Free",  url:"https://whiteeaglehall.com",                          title:"JC Book Fair: Small Press Edition",      desc:"White Eagle Hall opens its floor to 30+ small press and zine vendors from the tri-state area. Books, prints, and periodicals. All day, free entry." },
+];
+
+const NEIGHBORHOODS = ["All","Manhattan","Brooklyn","Bronx","Hoboken","Jersey City","East Village","West Village","Nolita","SoHo","Upper West Side","Williamsburg","Greenpoint","Fort Greene","Park Slope","Mott Haven","Union Square","Midtown","Harlem","Brooklyn Heights","Lower East Side","Bushwick"];
+
+const EVENT_TYPE_COLORS = {
+  "Author Reading": "#8B4513",
+  "Book Release":   "#9B2335",
+  "Reading Party":  "#1A5C8B",
+  "Bar Event":      "#5B3A6B",
+  "Book Club":      "#3D7A5E",
+  "Open Mic":       "#6B5B95",
+  "Workshop":       "#4A6FA5",
+  "Community":      "#C4762A",
+  "Kids":           "#B05080",
+  "Fair":           "#1A6B6B",
+};
+
+const EVENT_TYPES = ["All","Author Reading","Book Release","Reading Party","Bar Event","Book Club","Open Mic","Workshop","Kids","Community","Fair"];
+
+// ── THEMES ────────────────────────────────────────────────────────────────────
+
+const THEMES = {
+  parchment: { name:"Parchment", bg:"#F7F0E3", bg2:"#EFE5CC", surface:"#FDFAF4", surfaceAlt:"#EFE5CC", text:"#2C1810", textSub:"#7A5C45", accent:"#8B4513", accentLight:"rgba(139,69,19,0.1)", border:"rgba(44,24,16,0.12)", chipActive:"#2C1810", chipActiveTxt:"#F7F0E3", chipInactive:"#EFE5CC", chipInactiveTxt:"#7A5C45", pinColor:"#8B4513", nav:"#2C1810", navText:"#F7F0E3", sheetBg:"#FDFAF4", cardShadow:"0 2px 12px rgba(44,24,16,0.10)" },
+  noir:      { name:"Noir",      bg:"#1C1410", bg2:"#231A12", surface:"#2A1E14", surfaceAlt:"#1C1410", text:"#F2E8D5", textSub:"#A08060", accent:"#D4A843", accentLight:"rgba(212,168,67,0.12)", border:"rgba(242,232,213,0.1)", chipActive:"#D4A843", chipActiveTxt:"#1C1410", chipInactive:"#2A1E14", chipInactiveTxt:"#A08060", pinColor:"#D4A843", nav:"#2A1E14", navText:"#F2E8D5", sheetBg:"#231A12", cardShadow:"0 2px 16px rgba(0,0,0,0.5)" },
+  sage:      { name:"Sage",      bg:"#F2F0EA", bg2:"#E5E1D6", surface:"#FAFAF7", surfaceAlt:"#E5E1D6", text:"#1A2018", textSub:"#5A6856", accent:"#3D6B4F", accentLight:"rgba(61,107,79,0.1)", border:"rgba(26,32,24,0.1)", chipActive:"#1A2018", chipActiveTxt:"#F2F0EA", chipInactive:"#E5E1D6", chipInactiveTxt:"#5A6856", pinColor:"#3D6B4F", nav:"#1A2018", navText:"#F2F0EA", sheetBg:"#FAFAF7", cardShadow:"0 2px 12px rgba(26,32,24,0.08)" },
+};
+
+// ── MAP ───────────────────────────────────────────────────────────────────────
+
+const GOOGLE_MAPS_API_KEY = 'AIzaSyDB7_mYWq-TkFd-0WLmcUVRBA9laNqVXQs';
+
+function latLngToPixel(lat, lng, cLat, cLng, zoom, W, H) {
+  const scale = 256 * Math.pow(2, zoom);
+  const mercY = (d) => { const s = Math.min(Math.max(Math.sin(d*Math.PI/180),-0.9999),0.9999); return scale*(0.5-Math.log((1+s)/(1-s))/(4*Math.PI)); };
+  const mercX = (d) => scale*(d+180)/360;
+  return { x:(mercX(lng)-mercX(cLng))+W/2, y:(mercY(lat)-mercY(cLat))+H/2 };
+}
+
+const STATIC_STYLES = {
+  parchment:['style=feature:all|element:geometry|color:0xf5efe0','style=feature:water|element:geometry|color:0xb8cdd8','style=feature:poi|visibility:off','style=feature:poi.park|element:geometry|color:0xc8dbb8|visibility:on','style=feature:road|element:geometry|color:0xd4c9b0','style=feature:transit|visibility:off','style=feature:administrative|element:labels.text.fill|color:0x7a5c45'],
+  noir:['style=feature:all|element:geometry|color:0x1a1410','style=feature:all|element:labels.text.fill|color:0xa08060','style=feature:water|element:geometry|color:0x0e1620','style=feature:poi|visibility:off','style=feature:poi.park|element:geometry|color:0x0e1a10|visibility:on','style=feature:road|element:geometry|color:0x2a2010','style=feature:transit|visibility:off'],
+  sage:['style=feature:all|element:geometry|color:0xf0ede4','style=feature:water|element:geometry|color:0xb0c8c4','style=feature:poi|visibility:off','style=feature:poi.park|element:geometry|color:0xb8d4b8|visibility:on','style=feature:road|element:geometry|color:0xd8d4c8','style=feature:transit|visibility:off','style=feature:administrative|element:labels.text.fill|color:0x2a4a2c'],
+};
+
+function MapView({ t, themeKey, onSelectStore, selectedStore, active }) {
+  const ref = useRef(null);
+  const [size, setSize] = useState({ w:390, h:500 });
+  const [center, setCenter] = useState({ lat:40.730, lng:-74.010 });
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!active || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    if (r.width > 0) setSize({ w:Math.round(r.width), h:Math.round(r.height) });
+  }, [active]);
+
+  useEffect(() => {
+    if (selectedStore) setCenter({ lat:selectedStore.lat, lng:selectedStore.lng });
+  }, [selectedStore]);
+
+  const zoom = 12;
+  const styles = (STATIC_STYLES[themeKey]||STATIC_STYLES.sage).map(s=>`&${s}`).join('');
+  const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${center.lat},${center.lng}&zoom=${zoom}&size=${size.w}x${size.h}&scale=2${styles}&key=${GOOGLE_MAPS_API_KEY}`;
+
+  return (
+    <div ref={ref} style={{ position:'absolute', inset:0, overflow:'hidden' }}>
+      {!loaded && (
+        <div style={{ position:'absolute', inset:0, background:t.bg, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, zIndex:2 }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill={t.accent} style={{ animation:'spin 1.2s linear infinite' }}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          <span style={{ fontSize:12, color:t.textSub }}>Loading map…</span>
+        </div>
+      )}
+      <img src={mapUrl} alt="map" onLoad={()=>setLoaded(true)} onError={()=>setLoaded(true)} key={mapUrl}
+        style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', display:loaded?'block':'none' }} />
+      {loaded && BOOKSTORES.map(store => {
+        const pos = latLngToPixel(store.lat, store.lng, center.lat, center.lng, zoom, size.w, size.h);
+        const sel = selectedStore?.id === store.id;
+        if (pos.x<-20||pos.x>size.w+20||pos.y<-20||pos.y>size.h+20) return null;
+        return (
+          <div key={store.id} onClick={()=>onSelectStore(store)}
+            style={{ position:'absolute', left:pos.x, top:pos.y, transform:'translate(-50%,-100%)', cursor:'pointer', zIndex:sel?10:5, transition:'all 0.2s' }}>
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+              <div style={{ width:sel?34:26, height:sel?34:26, borderRadius:'50%', background:sel?t.accent:t.pinColor, border:'2.5px solid white', boxShadow:sel?'0 3px 14px rgba(0,0,0,0.4)':'0 2px 8px rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center', transition:'all 0.2s' }}>
+                <svg width={sel?14:11} height={sel?14:11} viewBox="0 0 24 24" fill="white"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+              </div>
+              <div style={{ width:2, height:sel?9:7, background:sel?t.accent:t.pinColor, opacity:0.85 }} />
+            </div>
+            {sel && (
+              <div style={{ position:'absolute', bottom:'100%', left:'50%', transform:'translateX(-50%)', background:'white', borderRadius:8, padding:'6px 10px', boxShadow:'0 4px 16px rgba(0,0,0,0.2)', whiteSpace:'nowrap', marginBottom:4, pointerEvents:'none' }}>
+                <div style={{ fontSize:10, fontWeight:700, color:'#1a1a1a' }}>{store.name}</div>
+                <div style={{ fontSize:9, color:'#666' }}>{EVENTS.filter(e=>e.storeId===store.id).length} events</div>
+                <div style={{ position:'absolute', bottom:-5, left:'50%', transform:'translateX(-50%)', width:0, height:0, borderLeft:'5px solid transparent', borderRight:'5px solid transparent', borderTop:'5px solid white' }} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── EVENT CARD ────────────────────────────────────────────────────────────────
+
+function EventCard({ event, store, t, onClick, saved }) {
+  const color = EVENT_TYPE_COLORS[event.type] || "#555";
+  return (
+    <div className="event-card" style={{ background:t.surface, boxShadow:t.cardShadow }} onClick={onClick}>
+      <div style={{ padding:'14px 16px' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+          <span className="event-type-pill" style={{ background:color+'18', color, border:`1px solid ${color}30` }}>{event.type}</span>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            {saved && <svg width="12" height="12" viewBox="0 0 24 24" fill={t.accent}><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>}
+            <span style={{ fontSize:11, color:t.textSub, fontWeight:500 }}>{event.price}</span>
+          </div>
+        </div>
+        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:600, color:t.text, lineHeight:1.3, marginBottom:6 }}>{event.title}</div>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill={t.textSub}><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
+            <span style={{ fontSize:11, color:t.textSub, fontWeight:500 }}>{event.date}</span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill={t.textSub}><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm.01 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+            <span style={{ fontSize:11, color:t.textSub, fontWeight:500 }}>{event.time}</span>
+          </div>
+        </div>
+        <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${t.border}`, display:'flex', alignItems:'center', gap:5 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill={t.accent}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+          <span style={{ fontSize:11, color:t.accent, fontWeight:600 }}>{store?.name}</span>
+          <span style={{ fontSize:11, color:t.textSub }}>· {store?.neighborhood}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── EVENT DETAIL SHEET ────────────────────────────────────────────────────────
+
+function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, saving }) {
+  const color = EVENT_TYPE_COLORS[event.type] || "#555";
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="bottom-sheet" style={{ background:t.sheetBg }} onClick={e=>e.stopPropagation()}>
+        <div className="sheet-handle" style={{ background:t.text }} />
+        <div style={{ padding:'0 20px' }}>
+          <span className="event-type-pill" style={{ background:color+'18', color, border:`1px solid ${color}30`, marginBottom:10, display:'inline-flex' }}>{event.type}</span>
+          <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:t.text, lineHeight:1.25, marginBottom:14 }}>{event.title}</div>
+          <div style={{ display:'flex', gap:16, marginBottom:16 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <div style={{ width:32, height:32, borderRadius:8, background:t.accentLight, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill={t.accent}><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
+              </div>
+              <span style={{ fontSize:13, color:t.text, fontWeight:500 }}>{event.date} · {event.time}</span>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <div style={{ width:32, height:32, borderRadius:8, background:t.accentLight, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill={t.accent}><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+              </div>
+              <span style={{ fontSize:13, color:t.text, fontWeight:500 }}>{event.price === "Free" ? "Free entry" : event.price}</span>
+            </div>
+          </div>
+          <div style={{ background:t.surfaceAlt, borderRadius:12, padding:'14px', marginBottom:16 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={t.accent}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+              <span style={{ fontSize:13, fontWeight:700, color:t.text }}>{store?.name}</span>
+            </div>
+            <div style={{ fontSize:12, color:t.textSub }}>{store?.address} · {store?.neighborhood}</div>
+          </div>
+          <div style={{ fontSize:14, color:t.text, lineHeight:1.65, marginBottom:20, opacity:0.85 }}>{event.desc}</div>
+          <div style={{ display:'flex', gap:10, marginBottom:10 }}>
+            <button onClick={()=>onToggleSave(event.id)} disabled={saving}
+              style={{ flex:1, padding:'13px', background:saved?t.accentLight:t.accent, color:saved?t.accent:'white', border:saved?`1.5px solid ${t.accent}`:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:saving?'wait':'pointer', fontFamily:'DM Sans', transition:'all 0.2s', opacity:saving?0.7:1 }}>
+              {saving ? '…' : saved ? '✓ Saved' : 'Save Event'}
+            </button>
+            <button style={{ padding:'13px 16px', background:t.accentLight, color:t.accent, border:'none', borderRadius:12, fontSize:14, fontWeight:600, cursor:'pointer', fontFamily:'DM Sans' }}>Share</button>
+          </div>
+          {event.url && (
+            <a href={event.url} target="_blank" rel="noopener noreferrer"
+              style={{ display:'block', textAlign:'center', padding:'12px', background:t.surfaceAlt, color:t.textSub, borderRadius:12, fontSize:13, fontWeight:500, textDecoration:'none', border:`1px solid ${t.border}` }}>
+              View Event Page ↗
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── STORE DETAIL SHEET ────────────────────────────────────────────────────────
+
+function StoreDetailSheet({ store, t, onClose, onEventClick }) {
+  const storeEvents = EVENTS.filter(e=>e.storeId===store.id);
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="bottom-sheet" style={{ background:t.sheetBg, maxHeight:'70%' }} onClick={e=>e.stopPropagation()}>
+        <div className="sheet-handle" style={{ background:t.text }} />
+        <div style={{ padding:'0 20px 8px' }}>
+          <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, fontWeight:700, color:t.text, marginBottom:4 }}>{store.name}</div>
+          <div style={{ fontSize:12, color:t.textSub, marginBottom:2 }}>{store.address} · {store.neighborhood}</div>
+          <div style={{ fontSize:12, color:t.textSub, fontStyle:'italic', marginBottom:14, fontFamily:"'Playfair Display',serif" }}>{store.tagline}</div>
+          <div style={{ fontSize:12, fontWeight:600, color:t.accent, marginBottom:10, textTransform:'uppercase', letterSpacing:'0.08em' }}>
+            {storeEvents.length} Upcoming {storeEvents.length===1?'Event':'Events'}
+          </div>
+        </div>
+        {storeEvents.length===0
+          ? <div style={{ padding:'20px', textAlign:'center', color:t.textSub, fontSize:13 }}>No upcoming events</div>
+          : storeEvents.map(ev=>(
+            <div key={ev.id} onClick={()=>onEventClick(ev)} style={{ margin:'0 16px 10px', padding:'12px 14px', background:t.surfaceAlt, borderRadius:10, cursor:'pointer' }}>
+              <div style={{ fontSize:13, fontWeight:600, color:t.text, fontFamily:"'Playfair Display',serif", marginBottom:4 }}>{ev.title}</div>
+              <div style={{ fontSize:11, color:t.textSub }}>{ev.date} · {ev.time} · {ev.price}</div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+
+function BookstoreApp({ t, themeKey }) {
+  const [screen, setScreen] = useState('events');
+  const [hood, setHood] = useState('All');
+  const [eventType, setEventType] = useState('All');
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [selectedStore, setSelectedStore] = useState(null);
+  const [storeSheet, setStoreSheet] = useState(null);
+  const [hasVisitedMap, setHasVisitedMap] = useState(false);
+
+  // Saved — Supabase backed
+  const [savedEvents, setSavedEvents] = useState(new Set());
+  const [savedLoading, setSavedLoading] = useState(true);
+  const [savingId, setSavingId] = useState(null);
+
+  useEffect(() => {
+    fetchSaved().then(set => { setSavedEvents(set); setSavedLoading(false); });
+  }, []);
+
+  const toggleSave = async (eventId) => {
+    const wasSaved = savedEvents.has(eventId);
+    setSavingId(eventId);
+    // Optimistic update
+    setSavedEvents(prev => { const n=new Set(prev); wasSaved?n.delete(eventId):n.add(eventId); return n; });
+    if (wasSaved) await unsaveEvent(eventId); else await saveEvent(eventId);
+    setSavingId(null);
+  };
+
+  const filtered = EVENTS.filter(ev => {
+    const store = BOOKSTORES.find(s=>s.id===ev.storeId);
+    const hoodOk = hood==='All'||(store&&(store.borough===hood||store.neighborhood===hood));
+    const typeOk = eventType==='All'||ev.type===eventType;
+    return hoodOk && typeOk;
+  });
+
+  const navItems = [
+    { id:'events', label:'Events', icon:"M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z" },
+    { id:'map',    label:'Map',    icon:"M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z" },
+    { id:'stores', label:'Stores', icon:"M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z" },
+    { id:'saved',  label:'Saved',  icon:"M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z" },
+  ];
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'100%', background:t.bg, position:'relative', overflow:'hidden' }}>
+
+      {/* Header */}
+      <div style={{ padding:'14px 20px 10px', background:t.bg, borderBottom:`1px solid ${t.border}` }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div>
+            <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:t.text, lineHeight:1 }}>
+              {screen==='events'?'Events':screen==='map'?'Explore':screen==='stores'?'Bookstores':'Saved'}
+            </div>
+            <div style={{ fontSize:11, color:t.textSub, marginTop:2, fontWeight:500 }}>
+              {screen==='events'?`${filtered.length} upcoming`
+               :screen==='map'?'NYC · Hoboken · Jersey City'
+               :screen==='stores'?`${BOOKSTORES.length} venues`
+               :savedLoading?'Loading…':`${savedEvents.size} saved`}
+            </div>
+          </div>
+          <div style={{ width:36, height:36, borderRadius:18, background:t.accentLight, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill={t.accent}><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      {(screen==='events'||screen==='stores') && (
+        <div style={{ borderBottom:`1px solid ${t.border}` }}>
+          <div className="filter-row" style={{ paddingTop:10, paddingBottom:6 }}>
+            {NEIGHBORHOODS.map(n => (
+              <div key={n} className="chip"
+                style={{ background:hood===n?t.chipActive:t.chipInactive, color:hood===n?t.chipActiveTxt:t.chipInactiveTxt, borderColor:hood===n?t.chipActive:t.border }}
+                onClick={()=>setHood(n)}>{n}</div>
+            ))}
+          </div>
+          {screen==='events' && (
+            <div className="filter-row" style={{ paddingBottom:10 }}>
+              {EVENT_TYPES.map(type => {
+                const color = EVENT_TYPE_COLORS[type];
+                const on = eventType===type;
+                return (
+                  <div key={type} className="chip"
+                    style={{ background:on?(color||t.chipActive):t.chipInactive, color:on?'white':(color||t.chipInactiveTxt), borderColor:on?(color||t.chipActive):(color?color+'40':t.border), fontSize:11 }}
+                    onClick={()=>setEventType(type)}>{type}</div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Content */}
+      <div style={{ flex:1, overflow:'hidden', position:'relative' }}>
+
+        {hasVisitedMap && (
+          <div style={{ position:'absolute', inset:0, display:screen==='map'?'block':'none', zIndex:screen==='map'?1:0 }}>
+            <MapView t={t} themeKey={themeKey} onSelectStore={s=>{setSelectedStore(s);setStoreSheet(s);}} selectedStore={selectedStore} active={screen==='map'} />
+          </div>
+        )}
+
+        {screen==='events' && (
+          <div className="app-scroll" style={{ height:'100%', paddingTop:10, paddingBottom:10 }}>
+            <div style={{ margin:'0 16px 16px', borderRadius:16, overflow:'hidden', background:t.accent, cursor:'pointer', boxShadow:t.cardShadow }}
+              onClick={()=>setSelectedEvent(EVENTS[0])}>
+              <div style={{ padding:'20px 18px', background:'linear-gradient(135deg,rgba(0,0,0,0.1) 0%,rgba(0,0,0,0) 100%)' }}>
+                <div style={{ fontSize:10, fontWeight:700, color:'rgba(255,255,255,0.75)', letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:8 }}>✦ Featured Tonight</div>
+                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:19, fontWeight:700, color:'white', lineHeight:1.25, marginBottom:10 }}>{EVENTS[0].title}</div>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:12, color:'rgba(255,255,255,0.85)', fontWeight:500 }}>{EVENTS[0].date} · {EVENTS[0].time}</span>
+                  <span style={{ width:3, height:3, borderRadius:'50%', background:'rgba(255,255,255,0.5)' }} />
+                  <span style={{ fontSize:12, color:'rgba(255,255,255,0.85)', fontWeight:500 }}>Strand Bookstore</span>
+                </div>
+              </div>
+            </div>
+            <div style={{ margin:'0 16px 12px', fontSize:11, fontWeight:700, color:t.textSub, letterSpacing:'0.1em', textTransform:'uppercase' }}>All Events</div>
+            {filtered.slice(1).map(ev=>{
+              const store=BOOKSTORES.find(s=>s.id===ev.storeId);
+              return <EventCard key={ev.id} event={ev} store={store} t={t} onClick={()=>setSelectedEvent(ev)} saved={savedEvents.has(ev.id)} />;
+            })}
+          </div>
+        )}
+
+        {screen==='stores' && (
+          <div className="app-scroll" style={{ height:'100%', paddingTop:10, paddingBottom:10 }}>
+            {BOOKSTORES.filter(s=>hood==='All'||s.borough===hood||s.neighborhood===hood).map(store=>{
+              const count=EVENTS.filter(e=>e.storeId===store.id).length;
+              return (
+                <div key={store.id} style={{ margin:'0 16px 10px', padding:'14px 16px', background:t.surface, borderRadius:14, boxShadow:t.cardShadow, cursor:'pointer' }}
+                  onClick={()=>setStoreSheet(store)}>
+                  <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontFamily:"'Playfair Display',serif", fontSize:16, fontWeight:600, color:t.text, marginBottom:2 }}>{store.name}</div>
+                      <div style={{ fontSize:11, color:t.textSub, marginBottom:2 }}>{store.neighborhood} · {store.borough}</div>
+                      <div style={{ fontSize:11, color:t.textSub, fontStyle:'italic', fontFamily:"'Playfair Display',serif" }}>{store.tagline}</div>
+                    </div>
+                    {count>0 && <div style={{ background:t.accentLight, borderRadius:10, padding:'4px 8px', marginLeft:10 }}><span style={{ fontSize:11, fontWeight:700, color:t.accent }}>{count} events</span></div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {screen==='saved' && (
+          <div className="app-scroll" style={{ height:'100%', paddingTop:10, paddingBottom:10 }}>
+            {savedLoading ? (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60%', gap:12 }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill={t.accent} style={{ animation:'spin 1.2s linear infinite' }}><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <div style={{ fontSize:13, color:t.textSub }}>Loading your saved events…</div>
+              </div>
+            ) : savedEvents.size===0 ? (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60%', gap:12 }}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill={t.border}><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <div style={{ fontSize:15, color:t.text, fontFamily:"'Playfair Display',serif", fontStyle:'italic' }}>No saved events yet</div>
+                <div style={{ fontSize:13, color:t.textSub, textAlign:'center', maxWidth:220, lineHeight:1.5 }}>Tap Save on any event and it'll appear here — even after you close the app.</div>
+              </div>
+            ) : EVENTS.filter(e=>savedEvents.has(e.id)).map(ev=>{
+              const store=BOOKSTORES.find(s=>s.id===ev.storeId);
+              return <EventCard key={ev.id} event={ev} store={store} t={t} onClick={()=>setSelectedEvent(ev)} saved={true} />;
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Bottom nav */}
+      <div style={{ background:t.nav, borderTop:'1px solid rgba(255,255,255,0.08)', paddingBottom:20, display:'flex' }}>
+        {navItems.map(item=>{
+          const on=screen===item.id;
+          return (
+            <div key={item.id} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0 2px', cursor:'pointer', opacity:on?1:0.45, transition:'opacity 0.15s' }}
+              onClick={()=>{ setScreen(item.id); if(item.id==='map') setHasVisitedMap(true); else setSelectedStore(null); }}>
+              <div style={{ position:'relative' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill={t.navText}><path d={item.icon}/></svg>
+                {item.id==='saved' && !savedLoading && savedEvents.size>0 && (
+                  <div style={{ position:'absolute', top:-4, right:-6, width:14, height:14, borderRadius:7, background:t.accent, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                    <span style={{ fontSize:8, fontWeight:700, color:'white' }}>{savedEvents.size}</span>
+                  </div>
+                )}
+              </div>
+              <span style={{ fontSize:9, color:t.navText, marginTop:3, fontWeight:on?600:400, letterSpacing:'0.02em' }}>{item.label}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {selectedEvent && (
+        <EventDetailSheet
+          event={selectedEvent}
+          store={BOOKSTORES.find(s=>s.id===selectedEvent.storeId)}
+          t={t} onClose={()=>setSelectedEvent(null)}
+          onToggleSave={toggleSave}
+          saved={savedEvents.has(selectedEvent.id)}
+          saving={savingId===selectedEvent.id}
+        />
+      )}
+      {storeSheet && (
+        <StoreDetailSheet store={storeSheet} t={t} onClose={()=>setStoreSheet(null)}
+          onEventClick={ev=>{ setStoreSheet(null); setSelectedEvent(ev); }} />
+      )}
+    </div>
+  );
+}
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+
+function Root() {
+  const [theme, setTheme] = useState('sage');
+  const [showThree, setShowThree] = useState(false);
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+  const themes = showThree ? ['parchment','noir','sage'] : [theme];
+  const labels = { parchment:'Parchment', noir:'Noir', sage:'Sage' };
+
+  return (
+    <>
+      <div className="scene">
+        {themes.map(key => (
+          <div key={key} style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+            <IOSDevice dark={key==='noir'}>
+              <BookstoreApp t={THEMES[key]} themeKey={key} />
+            </IOSDevice>
+            {showThree && <div style={{ fontFamily:'DM Sans', fontSize:11, fontWeight:500, letterSpacing:'0.12em', textTransform:'uppercase', color:'rgba(255,255,255,0.35)', textAlign:'center', marginTop:12 }}>{labels[key]}</div>}
+          </div>
+        ))}
+      </div>
+
+      <button onClick={()=>setTweaksOpen(o=>!o)}
+        style={{ position:'fixed', bottom:20, right:tweaksOpen?232:20, width:40, height:40, borderRadius:20, background:'#D4A843', border:'none', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 16px rgba(0,0,0,0.4)', zIndex:1001, transition:'right 0.2s' }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#1C1410"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+      </button>
+
+      {tweaksOpen && (
+        <div className="tweaks-panel" style={{ background:'#1C1410', color:'#F2E8D5' }}>
+          <h4 style={{ color:'#F2E8D5' }}>Tweaks</h4>
+          <div className="tweak-label" style={{ color:'#A08060' }}>Display</div>
+          {[{k:true,l:'All 3 Themes'},{k:false,l:'Single Theme'}].map(o=>(
+            <button key={String(o.k)} className="tweak-btn"
+              style={{ background:showThree===o.k?'#D4A843':'rgba(255,255,255,0.07)', color:showThree===o.k?'#1C1410':'#F2E8D5' }}
+              onClick={()=>setShowThree(o.k)}>{o.l}</button>
+          ))}
+          {!showThree && <>
+            <div className="tweak-divider" />
+            <div className="tweak-label" style={{ color:'#A08060' }}>Theme</div>
+            {Object.entries(labels).map(([k,l])=>(
+              <button key={k} className="tweak-btn"
+                style={{ background:theme===k?'#D4A843':'rgba(255,255,255,0.07)', color:theme===k?'#1C1410':'#F2E8D5' }}
+                onClick={()=>setTheme(k)}>{l}</button>
+            ))}
+          </>}
+        </div>
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+
+<div id="root"></div>
+</body>
+</html>
