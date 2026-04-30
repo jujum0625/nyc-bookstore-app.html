@@ -76,6 +76,18 @@ function getUserId() {
   return id;
 }
 
+// Fix malformed price strings stored in DB (e.g. Luma dict repr)
+function cleanPrice(raw) {
+  if (!raw) return 'Free';
+  // Detect Python dict repr: "{'cents': 1200, 'currency': 'usd', ...}"
+  const centsMatch = String(raw).match(/'cents':\s*(\d+)/);
+  if (centsMatch) {
+    const dollars = parseInt(centsMatch[1], 10) / 100;
+    return dollars === 0 ? 'Free' : `$${dollars % 1 === 0 ? dollars : dollars.toFixed(2)}`;
+  }
+  return raw;
+}
+
 // Returns today's date as YYYY-MM-DD in local time (no UTC shift)
 function todayISO() {
   const d = new Date();
@@ -103,6 +115,8 @@ async function loadEvents() {
     storeId: ev.venue_id,
     desc:    ev.description,
     date:    fmtDate(ev.event_date),
+    // Clean up malformed price strings (e.g. Luma dict repr)
+    price:   cleanPrice(ev.price),
     time:    ev.event_time,
   }));
 }
@@ -416,8 +430,8 @@ function EventCard({ event, store, t, onClick, saved }) {
         </div>
         <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${t.border}`,display:'flex',alignItems:'center',gap:5}}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill={t.accent}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
-          <span style={{fontSize:11,color:t.accent,fontWeight:600}}>{store?.name}</span>
-          <span style={{fontSize:11,color:t.textSub}}>· {store?.neighborhood}</span>
+          <span style={{fontSize:11,color:t.accent,fontWeight:600}}>{store?.name||'Various Venues'}</span>
+          {store?.neighborhood&&<span style={{fontSize:11,color:t.textSub}}>· {store.neighborhood}</span>}
         </div>
       </div>
     </div>
