@@ -30,6 +30,12 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #1a110a; min-height: 100vh; display: flex; align-items: center; justify-content: center; font-family: 'DM Sans', sans-serif; overflow: hidden; }
 .scene { display: flex; gap: 40px; align-items: flex-start; justify-content: center; padding: 40px; flex-wrap: wrap; }
+/* ── Mobile: fill the real screen, no phone frame ── */
+@media (max-width: 500px) {
+  body { background: #f5efe0; align-items: stretch; justify-content: stretch; min-height: 100dvh; height: 100dvh; overflow: hidden; }
+  #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
+  .mobile-shell { width: 100%; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+}
 .app-scroll { width: 100%; height: 100%; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
 .app-scroll::-webkit-scrollbar { display: none; }
 .overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 50; display: flex; flex-direction: column; justify-content: flex-end; }
@@ -495,7 +501,7 @@ function StoreDetailSheet({ store, events, t, onClose, onEventClick }) {
 }
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
-function BookstoreApp({ t, themeKey, events, eventsLoading }) {
+function BookstoreApp({ t, themeKey, events, eventsLoading, isMobile=false }) {
   const [screen,setScreen]=useState('events');
   const [hood,setHood]=useState('All');
   const [evType,setEvType]=useState('All');
@@ -538,7 +544,7 @@ function BookstoreApp({ t, themeKey, events, eventsLoading }) {
     <div style={{display:'flex',flexDirection:'column',height:'100%',background:t.bg,position:'relative',overflow:'hidden'}}>
 
       {/* Header */}
-      <div style={{padding:'14px 20px 10px',background:t.bg,borderBottom:`1px solid ${t.border}`}}>
+      <div style={{padding:`calc(14px + ${isMobile?'env(safe-area-inset-top, 0px)':'0px'}) 20px 10px`,background:t.bg,borderBottom:`1px solid ${t.border}`}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div>
             <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,fontWeight:700,color:t.text,lineHeight:1}}>
@@ -662,7 +668,7 @@ function BookstoreApp({ t, themeKey, events, eventsLoading }) {
       </div>
 
       {/* Bottom nav */}
-      <div style={{background:t.nav,borderTop:'1px solid rgba(255,255,255,0.08)',paddingBottom:20,display:'flex'}}>
+      <div style={{background:t.nav,borderTop:'1px solid rgba(255,255,255,0.08)',paddingBottom:`calc(20px + ${isMobile?'env(safe-area-inset-bottom, 0px)':'0px'})`,display:'flex'}}>
         {nav.map(item=>{
           const on=screen===item.id;
           return (
@@ -696,10 +702,20 @@ function Root() {
   const [events,setEvents]=useState([]);
   const [eventsLoading,setEventsLoading]=useState(true);
   const labels={parchment:'Parchment',noir:'Noir',sage:'Sage'};
+  const isMobile = window.innerWidth <= 500;
 
   useEffect(()=>{
     loadEvents().then(evs=>{setEvents(evs);setEventsLoading(false);});
   },[]);
+
+  // ── Real phone: full-screen, no frame, safe-area aware ──
+  if (isMobile) {
+    return (
+      <div className="mobile-shell" style={{background:THEMES[theme].bg}}>
+        <BookstoreApp t={THEMES[theme]} themeKey={theme} events={events} eventsLoading={eventsLoading} isMobile={true}/>
+      </div>
+    );
+  }
 
   const themes=showThree?['parchment','noir','sage']:[theme];
 
