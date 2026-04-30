@@ -1,11 +1,13 @@
 // NYC Bookstore Events — Service Worker
 const CACHE = 'booknyc-v1';
+// Build precache URLs relative to wherever sw.js is served from
+const BASE = self.registration.scope;
 const PRECACHE = [
-  '/nyc-bookstore-app.html/',
-  '/nyc-bookstore-app.html/index.html',
-  '/nyc-bookstore-app.html/manifest.json',
-  '/nyc-bookstore-app.html/icons/icon-192.png',
-  '/nyc-bookstore-app.html/icons/icon-512.png',
+  BASE,
+  BASE + 'index.html',
+  BASE + 'manifest.json',
+  BASE + 'icons/icon-192.png',
+  BASE + 'icons/icon-512.png',
 ];
 
 // Install: pre-cache shell assets

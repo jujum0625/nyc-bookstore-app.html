@@ -767,7 +767,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Root/>);
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/nyc-bookstore-app.html/sw.js')
+    navigator.serviceWorker.register('./sw.js')
       .then(r => console.log('SW registered', r.scope))
       .catch(e => console.log('SW error', e));
   });
