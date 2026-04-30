@@ -1,5 +1,5 @@
 // NYC Bookstore Events — Service Worker
-const CACHE = 'booknyc-v1';
+const CACHE = 'booknyc-v2';
 // Build precache URLs relative to wherever sw.js is served from
 const BASE = self.registration.scope;
 const PRECACHE = [
