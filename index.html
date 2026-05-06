@@ -478,6 +478,16 @@ function EventCard({ event, store, t, onClick, saved }) {
 
 function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, saving }) {
   const color=EVENT_TYPE_COLORS[event.type]||"#555";
+
+  // Try to extract a venue name from the description when there's no fixed store
+  function inferVenueName(desc) {
+    if (!desc) return null;
+    // Look for "at <Venue Name>" patterns
+    const m = desc.match(/\bat\s+([A-Z][^.,\n]{3,40}?)(?=[,.\n]|$)/);
+    return m ? m[1].trim() : null;
+  }
+  const fallbackVenue = store ? null : inferVenueName(event.desc);
+
   return (
     <div className="overlay" onClick={onClose}>
       <div className="bottom-sheet" style={{background:t.sheetBg}} onClick={e=>e.stopPropagation()}>
@@ -499,7 +509,7 @@ function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, savin
               <span style={{fontSize:13,color:t.text,fontWeight:500}}>{event.price==="Free"?"Free entry":event.price}</span>
             </div>
           </div>
-          {store&&(
+          {store ? (
             <div style={{borderRadius:14,overflow:'hidden',marginBottom:16,boxShadow:t.cardShadow}}>
               {/* Mini static map */}
               <a href={`https://maps.google.com/?q=${encodeURIComponent(store.address+', '+store.neighborhood+', New York')}`} target="_blank" rel="noopener noreferrer" style={{display:'block',height:110,overflow:'hidden',position:'relative'}}>
@@ -519,6 +529,15 @@ function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, savin
                   <span style={{fontSize:13,fontWeight:700,color:t.text}}>{store.name}</span>
                 </div>
                 <div style={{fontSize:11,color:t.textSub,paddingLeft:19}}>{store.address} · {store.neighborhood}</div>
+              </div>
+            </div>
+          ) : (
+            /* No fixed venue — show a simple location pill */
+            <div style={{background:t.surfaceAlt,borderRadius:12,padding:'11px 14px',marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={t.textSub}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+              <div>
+                <div style={{fontSize:13,fontWeight:600,color:t.text}}>{fallbackVenue || 'Various Venues'}</div>
+                <div style={{fontSize:11,color:t.textSub,marginTop:1}}>Check event page for exact location</div>
               </div>
             </div>
           )}
