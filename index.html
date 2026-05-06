@@ -111,13 +111,15 @@ async function loadEvents() {
   return data.map(ev => ({
     ...ev,
     // Normalize id to string — Supabase returns BIGSERIAL as string in JS
-    id:      String(ev.id),
-    storeId: ev.venue_id,
-    desc:    ev.description,
-    date:    fmtDate(ev.event_date),
+    id:           String(ev.id),
+    storeId:      ev.venue_id,
+    desc:         ev.description,
+    date:         fmtDate(ev.event_date),
     // Clean up malformed price strings (e.g. Luma dict repr)
-    price:   cleanPrice(ev.price),
-    time:    ev.event_time,
+    price:        cleanPrice(ev.price),
+    time:         ev.event_time,
+    venueName:    ev.venue_name   || null,
+    venueAddress: ev.venue_address || null,
   }));
 }
 
@@ -479,14 +481,13 @@ function EventCard({ event, store, t, onClick, saved }) {
 function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, saving }) {
   const color=EVENT_TYPE_COLORS[event.type]||"#555";
 
-  // Try to extract a venue name from the description when there's no fixed store
-  function inferVenueName(desc) {
-    if (!desc) return null;
-    // Look for "at <Venue Name>" patterns
-    const m = desc.match(/\bat\s+([A-Z][^.,\n]{3,40}?)(?=[,.\n]|$)/);
+  // Fallback venue info for pop-up events with no fixed store
+  const fallbackName    = event.venueName    || (() => {
+    if (!event.desc) return null;
+    const m = event.desc.match(/\bat\s+([A-Z][^.,\n]{3,40}?)(?=[,.\n]|$)/);
     return m ? m[1].trim() : null;
-  }
-  const fallbackVenue = store ? null : inferVenueName(event.desc);
+  })();
+  const fallbackAddress = event.venueAddress || null;
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -531,12 +532,33 @@ function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, savin
                 <div style={{fontSize:11,color:t.textSub,paddingLeft:19}}>{store.address} · {store.neighborhood}</div>
               </div>
             </div>
+          ) : fallbackAddress ? (
+            /* Pop-up with a known address — show static map + address card */
+            <div style={{borderRadius:14,overflow:'hidden',marginBottom:16,boxShadow:t.cardShadow}}>
+              <a href={`https://maps.google.com/?q=${encodeURIComponent(fallbackAddress)}`} target="_blank" rel="noopener noreferrer" style={{display:'block',height:110,overflow:'hidden',position:'relative'}}>
+                <img
+                  src={`https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(fallbackAddress)}&zoom=15&size=600x220&scale=2&markers=color:0x${t.accent.replace('#','')}%7C${encodeURIComponent(fallbackAddress)}&style=feature:poi%7Cvisibility:off&style=feature:transit%7Cvisibility:off&key=${GMAPS_KEY}`}
+                  alt={fallbackName || 'Event venue'}
+                  style={{width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block'}}
+                />
+                <div style={{position:'absolute',bottom:8,right:8,background:'rgba(0,0,0,0.55)',borderRadius:6,padding:'3px 8px'}}>
+                  <span style={{fontSize:10,color:'white',fontWeight:600}}>Open in Maps ↗</span>
+                </div>
+              </a>
+              <div style={{background:t.surfaceAlt,padding:'11px 14px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:3}}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill={t.accent}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+                  <span style={{fontSize:13,fontWeight:700,color:t.text}}>{fallbackName || 'Event Venue'}</span>
+                </div>
+                <div style={{fontSize:11,color:t.textSub,paddingLeft:19}}>{fallbackAddress}</div>
+              </div>
+            </div>
           ) : (
-            /* No fixed venue — show a simple location pill */
+            /* Truly no location info */
             <div style={{background:t.surfaceAlt,borderRadius:12,padding:'11px 14px',marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill={t.textSub}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
               <div>
-                <div style={{fontSize:13,fontWeight:600,color:t.text}}>{fallbackVenue || 'Various Venues'}</div>
+                <div style={{fontSize:13,fontWeight:600,color:t.text}}>{fallbackName || 'Various Venues'}</div>
                 <div style={{fontSize:11,color:t.textSub,marginTop:1}}>Check event page for exact location</div>
               </div>
             </div>
