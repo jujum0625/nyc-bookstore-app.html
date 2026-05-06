@@ -284,12 +284,50 @@ function loadGmapsSdk() {
     const cb = '__gmaps_cb_' + Date.now();
     window[cb] = () => { delete window[cb]; resolve(); };
     const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${GMAPS_KEY}&callback=${cb}`;
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${GMAPS_KEY}&loading=async&callback=${cb}`;
     s.async = true;
     s.onerror = reject;
     document.head.appendChild(s);
   });
   return _gmapsPromise;
+}
+
+// ── PLACES API (New) ──────────────────────────────────────────────────────────
+// Session-level cache: store.id → Place object (or null on failure)
+const _placeCache = new Map();
+
+async function fetchPlaceDetails(store) {
+  if (_placeCache.has(store.id)) return _placeCache.get(store.id);
+  try {
+    await loadGmapsSdk();
+    const { Place } = await window.google.maps.importLibrary('places');
+    const textQuery = store.borough === 'Bronx' || store.borough === 'Brooklyn' || store.borough === 'Queens'
+      ? `${store.name} ${store.address} ${store.borough} NY`
+      : `${store.name} ${store.address} New York NY`;
+    const { places } = await Place.searchByText({
+      textQuery,
+      fields: ['regularOpeningHours', 'rating', 'userRatingCount', 'nationalPhoneNumber', 'businessStatus'],
+      locationBias: { lat: store.lat, lng: store.lng },
+      maxResultCount: 1,
+    });
+    const place = places && places.length > 0 ? places[0] : null;
+    _placeCache.set(store.id, place);
+    return place;
+  } catch (e) {
+    console.warn('[places]', store.name, e.message);
+    _placeCache.set(store.id, null);
+    return null;
+  }
+}
+
+function usePlaceDetails(store) {
+  const [place, setPlace] = React.useState(undefined); // undefined=loading, null=not found/error
+  React.useEffect(() => {
+    if (!store) { setPlace(null); return; }
+    setPlace(undefined); // show loading state
+    fetchPlaceDetails(store).then(setPlace);
+  }, [store && store.id]);
+  return place;
 }
 
 function MapView({ t, themeKey, events, onSelectStore, selectedStore, active }) {
@@ -487,15 +525,78 @@ function EventDetailSheet({ event, store, t, onClose, onToggleSave, saved, savin
 }
 
 function StoreDetailSheet({ store, events, t, onClose, onEventClick }) {
-  const storeEvents=events.filter(e=>e.storeId===store.id);
+  const storeEvents = events.filter(e => e.storeId === store.id);
+  const place = usePlaceDetails(store);
+
+  // Convert JS day (0=Sun) to Places weekdayDescriptions index (Mon=0…Sun=6)
+  const todayPlacesIdx = (new Date().getDay() + 6) % 7;
+  const weekdayLine = place?.regularOpeningHours?.weekdayDescriptions?.[todayPlacesIdx] || '';
+  // Strip "Monday: " prefix → just the hours range
+  const todayHours = weekdayLine.replace(/^[^:]+:\s*/, '');
+  const isOpen = place?.regularOpeningHours?.isOpen?.();
+
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="bottom-sheet" style={{background:t.sheetBg,maxHeight:'70%'}} onClick={e=>e.stopPropagation()}>
+      <div className="bottom-sheet" style={{background:t.sheetBg,maxHeight:'75%'}} onClick={e=>e.stopPropagation()}>
         <div className="sheet-handle" style={{background:t.text}}/>
         <div style={{padding:'0 20px 8px'}}>
           <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,fontWeight:700,color:t.text,marginBottom:4}}>{store.name}</div>
           <div style={{fontSize:12,color:t.textSub,marginBottom:2}}>{store.address} · {store.neighborhood}</div>
-          <div style={{fontSize:12,color:t.textSub,fontStyle:'italic',marginBottom:14,fontFamily:"'Playfair Display',serif"}}>{store.tagline}</div>
+          <div style={{fontSize:12,color:t.textSub,fontStyle:'italic',marginBottom:12,fontFamily:"'Playfair Display',serif"}}>{store.tagline}</div>
+
+          {/* ── Live store details from Places API ── */}
+          {place === undefined ? (
+            /* Loading skeleton */
+            <div style={{background:t.surfaceAlt,borderRadius:12,padding:'10px 14px',marginBottom:12,display:'flex',alignItems:'center',gap:8,opacity:0.7}}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill={t.accent} style={{animation:'spin 1.2s linear infinite',flexShrink:0}}><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>
+              <span style={{fontSize:12,color:t.textSub}}>Checking hours…</span>
+            </div>
+          ) : place ? (
+            <div style={{background:t.surfaceAlt,borderRadius:12,padding:'12px 14px',marginBottom:12,display:'flex',flexDirection:'column',gap:8}}>
+              {/* Open / Closed + today's hours */}
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                {isOpen !== undefined && (
+                  <span style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,fontWeight:700,color:isOpen?'#2E8B57':'#C0392B'}}>
+                    <span style={{width:7,height:7,borderRadius:'50%',background:isOpen?'#2E8B57':'#C0392B',display:'inline-block',flexShrink:0}}/>
+                    {isOpen ? 'Open now' : 'Closed now'}
+                  </span>
+                )}
+                {todayHours && (
+                  <span style={{fontSize:12,color:t.textSub}}>{todayHours}</span>
+                )}
+              </div>
+              {/* Star rating */}
+              {place.rating != null && (
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <div style={{display:'flex',gap:1.5}}>
+                    {[1,2,3,4,5].map(i => {
+                      const filled = i <= Math.round(place.rating);
+                      return (
+                        <svg key={i} width="12" height="12" viewBox="0 0 24 24">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            fill={filled?'#F4B400':'none'} stroke="#F4B400" strokeWidth="1.5" strokeLinejoin="round"/>
+                        </svg>
+                      );
+                    })}
+                  </div>
+                  <span style={{fontSize:12,color:t.text,fontWeight:600}}>{place.rating.toFixed(1)}</span>
+                  {place.userRatingCount != null && (
+                    <span style={{fontSize:11,color:t.textSub}}>({place.userRatingCount.toLocaleString()} reviews)</span>
+                  )}
+                </div>
+              )}
+              {/* Phone */}
+              {place.nationalPhoneNumber && (
+                <a href={`tel:${place.nationalPhoneNumber}`} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:12,color:t.accent,fontWeight:500,textDecoration:'none'}}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill={t.accent} style={{flexShrink:0}}>
+                    <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+                  </svg>
+                  {place.nationalPhoneNumber}
+                </a>
+              )}
+            </div>
+          ) : null /* no place data — show nothing extra */}
+
           <div style={{fontSize:12,fontWeight:600,color:t.accent,marginBottom:10,textTransform:'uppercase',letterSpacing:'0.08em'}}>
             {storeEvents.length} Upcoming {storeEvents.length===1?'Event':'Events'}
           </div>
